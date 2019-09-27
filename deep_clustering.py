@@ -2,6 +2,7 @@ from tensorflow.python.keras.layers import Layer, InputSpec
 from tensorflow.python.keras.models import Model
 from tensorflow.python.keras.callbacks import CSVLogger, TensorBoard
 from tensorflow.python.keras import backend as K
+from tensorflow.python.keras.optimizers import Adam
 
 from sklearn.cluster import KMeans
 from sklearn.utils.linear_assignment_ import linear_assignment
@@ -306,7 +307,7 @@ class DCEC(DeepClusteringBase):
                  log_dir,
                  tol=1e-3,
                  alpha=1.0,
-                 maxiter=int(2e4), 
+                 maxiter=1e4,#int(2e4), 
                  update_interval=140,
                  *args,
                  **kwargs):
@@ -348,8 +349,9 @@ class DCEC(DeepClusteringBase):
         return (weight.T / weight.sum(1)).T
 
     def compile(self, loss_weights=[1., 1.], optimizer='adam', loss=['mse'], *args, **kwargs):
-        self._model.compile(loss=['kld'] + loss, 
-                            loss_weights=loss_weights, 
+        optimizer = Adam(lr=0.01)
+        self._model.compile(loss=['kld'] + loss * (len(self._model.outputs) - 1), # for multiinput models
+                            loss_weights=[loss_weights for _ in range(len(self._model.outputs))], 
                             optimizer=optimizer)
         
     def initialize(self, x):
@@ -499,7 +501,7 @@ class DC_Kmeans(DeepClusteringBase):
                 break
 
             logger.info('Training model.')
-            train_history = self._model.fit(x, [self.assigned_centroids, x], batch_size=256, verbose=0)
+            train_history = self._model.fit(x, [self.assigned_centroids, x], batch_size=128, verbose=0)
             self.f = self._encoder.predict(x)
 
             # save intermediate model
