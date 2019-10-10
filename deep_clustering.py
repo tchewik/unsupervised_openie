@@ -349,16 +349,16 @@ class DCEC(DeepClusteringBase):
         return self.score(x).argmax(axis=1)  # q.argmax
     
     def score_examples(self, x):
-        # the clustering layer weights might be considered as the centroids of clustering
-        cluster_centers_ = daec._model.get_layer(name='clustering').get_weights()[0]
+        # the clustering layer weights might be considered as the cluster centroids
+        cluster_centers_ = self._model.get_layer(name='clustering').get_weights()[0]
         
         def closeness(x, clusters):
             result = [np.sqrt(sum([(x[i][j] - cluster_centers_[clusters[i]][j])**2 
                                    for j in range(len(x[i]))])) for i in range(len(x))]
             return 1. - result / np.max(result)
         
-        x_emb = self._model.predict(x, verbose=0)
-        clusters = self.predict(x_emb)
+        x_emb = self.score(x)
+        clusters = x_emb.argmax(axis=1)
         return closeness(x_emb, clusters)
     
     @staticmethod
@@ -376,6 +376,7 @@ class DCEC(DeepClusteringBase):
         kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
         self._y_pred = kmeans.fit_predict(self._encoder.predict(x))
         self._model.get_layer(name='clustering').set_weights([kmeans.cluster_centers_])
+        self._kmeans = kmeans
         return None
         
     def update_variables(self, x, variables):
