@@ -19,6 +19,8 @@ from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 _nmi = normalized_mutual_info_score
 _ari = adjusted_rand_score
 
+MAX_JOBS = 6
+
 
 def _acc(y_true, y_pred):
     """
@@ -63,7 +65,8 @@ class DeepClusteringBase:
         logger.info('Pretraining...')
         self._autoencoder.compile(optimizer=optimizer, loss='mse')
         
-        csv_logger = CSVLogger(os.path.join(self._save_dir, 'pretrain_log.csv'))
+        STRFTIME = "%Y-%m-%d_%H:%M"
+        csv_logger = CSVLogger(os.path.join(self._save_dir, f'pretrain_log_{datetime.now().strftime(STRFTIME)}.csv'))
         
         callback_tensorboard = TensorBoard(log_dir=os.path.join(self._log_dir, str(datetime.now())), 
                                            histogram_freq=2, 
@@ -107,11 +110,14 @@ class DeepClusteringBase:
         import csv, os
         if not os.path.exists(self._save_dir):
             os.makedirs(self._save_dir)
-        self._logfile = open(os.path.join(self._save_dir, 'dcec_log.csv'), 'w')
-        self._logwriter = csv.DictWriter(self._logfile, 
-                                         fieldnames=['iter', 'acc', 'nmi', 
-                                                     'ari', 'L', 'Lc', 'Lr'])
-        self._logwriter.writeheader()
+            
+        STRFTIME = "%Y-%m-%d_%H:%M"
+        #self._logfile = CSVLogger(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'))
+        self._logfile = open(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'), 'w')
+        #self._logwriter = csv.DictWriter(self._logfile, 
+        #                                 fieldnames=['iter', 'acc', 'nmi', 
+        #                                             'ari', 'L', 'Lc', 'Lr'])
+        #self._logwriter.writeheader()
         
         logger.info('Training model.')
         t2 = time()
@@ -131,9 +137,8 @@ class DeepClusteringBase:
         nmi = np.round(_nmi(y, y_pred), 5)
         ari = np.round(_ari(y, y_pred), 5)
         loss = np.round(loss, 5)
-        logdict = dict(iter=ite, acc=acc, nmi=nmi, ari=ari, L=loss[0], Lc=loss[1], Lr=loss[2])
-        #logdict = dict(iter=ite, acc=acc, nmi=nmi, ari=ari, L=str(loss))
-        self._logwriter.writerow(logdict)
+        #logdict = dict(iter=ite, acc=acc, nmi=nmi, ari=ari, L=loss[0], Lc=loss[1], Lr=loss[2])
+        #self._logwriter.writerow(logdict)
         logger.info('Iter: {} Acc: {} nmi: {} ari: {} loss: {}'.format(ite, acc, nmi, ari, loss))
         
     def stopping_criterion(self, y, y_last):
@@ -177,7 +182,9 @@ class DeepClusteringBase:
             if ite % self._update_interval == 0:
                 self._y_pred, variables = self.update_variables(x, variables)
                 
-                logger.info('Loss: {}'.format(str(loss)))
+                if ite > 0:
+                    self._logfile.write(str(loss))
+                    logger.info('Loss: {}'.format(str(loss)))    
                 
                 if y is not None:
                     self.evaluate(self._y_pred, y, ite, loss)
@@ -307,7 +314,7 @@ class DCEC(DeepClusteringBase):
                  log_dir,
                  tol=1e-3,
                  alpha=1.0,
-                 maxiter=1e4,#int(2e4), 
+                 maxiter=1e4,
                  update_interval=140,
                  *args,
                  **kwargs):
@@ -336,13 +343,24 @@ class DCEC(DeepClusteringBase):
                                   self._autoencoder.output])
     
     def score(self, x):
-        return self._model.predict(x, verbose=0)[0] # q
+        return self._model.predict(x, verbose=0)[0]  # q
     
     def predict(self, x):
-        return self.score(x).argmax(axis=1) # q.argmax
-        #q, _ = self._model.predict(x, verbose=0)
-        #return q.argmax(1)
-
+        return self.score(x).argmax(axis=1)  # q.argmax
+    
+    def score_examples(self, x):
+        # the clustering layer weights might be considered as the cluster centroids
+        cluster_centers_ = self._model.get_layer(name='clustering').get_weights()[0]
+        
+        def closeness(x, clusters):
+            result = [np.sqrt(sum([(x[i][j] - cluster_centers_[clusters[i]][j])**2 
+                                   for j in range(len(x[i]))])) for i in range(len(x))]
+            return 1. - result / np.max(result)
+        
+        x_emb = self.score(x)
+        clusters = x_emb.argmax(axis=1)
+        return closeness(x_emb, clusters)
+    
     @staticmethod
     def target_distribution(q):
         weight = q ** 2 / q.sum(0)
@@ -355,9 +373,10 @@ class DCEC(DeepClusteringBase):
                             optimizer=optimizer)
         
     def initialize(self, x):
-        kmeans = KMeans(n_clusters=self._n_clusters, n_init=20)
+        kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
         self._y_pred = kmeans.fit_predict(self._encoder.predict(x))
         self._model.get_layer(name='clustering').set_weights([kmeans.cluster_centers_])
+        self._kmeans = kmeans
         return None
         
     def update_variables(self, x, variables):
@@ -367,7 +386,6 @@ class DCEC(DeepClusteringBase):
     
     def signal_example(self, x, p):
         # x - list of tensors
-        
         return [p] + x
     
     
@@ -377,11 +395,16 @@ class DAEC(DeepClusteringBase):
                  autoencoder_ctor, 
                  n_clusters, 
                  pretrain_epochs, 
+                 log_dir,
+                 save_dir,
                  tol=1e-3,
+                 max_epochs=20,
                  *args,
                  **kwargs):
-        super().__init__(input_shape, autoencoder_ctor, 
-                         n_clusters, pretrain_epochs, tol, 
+        
+        super().__init__(input_shape=input_shape, autoencoder_ctor=autoencoder_ctor, 
+                         n_clusters=n_clusters, pretrain_epochs=pretrain_epochs, log_dir=log_dir, save_dir=save_dir, 
+                         tol=tol, max_epochs=max_epochs,
                          *args, **kwargs)
     
     def create_model(self):
@@ -396,10 +419,20 @@ class DAEC(DeepClusteringBase):
 
     def predict(self, x):
         return self._kmeans.predict(self._encoder.predict(x, verbose=0))
+    
+    def score_examples(self, x):
+        def closeness(x, clusters):
+            result = [np.sqrt(sum([(x[i][j] - self._kmeans.cluster_centers_[clusters[i]][j])**2 
+                                   for j in range(len(x[i]))])) for i in range(len(x))]
+            return 1. - result / np.max(result)
+    
+        x_emb = self._encoder.predict(x, verbose=0)
+        clusters = self._kmeans.predict(x_emb)
+        return closeness(x_emb, clusters)
 
-    def compile(self, loss_weights=[1., 1.], optimizer='adam'):
-        self._model.compile(loss=['mse', 'mse'], 
-                            loss_weights=loss_weights, 
+    def compile(self, loss_weights=[1., 1.], optimizer='adam', loss=['mse'], *args, **kwargs):
+        self._model.compile(loss=['mse'] + loss * (len(self._model.outputs) - 1), # for multiinput models
+                            loss_weights=[loss_weights for _ in range(len(self._model.outputs))], 
                             optimizer=optimizer)
 
     def initialize(self, x):
@@ -408,29 +441,24 @@ class DAEC(DeepClusteringBase):
     def train_model(self, x, y, batch_size, variables):
         for ite in range(int(self._max_epochs)):
             logger.info('Training k-means...')
-            self._kmeans = KMeans(n_clusters=self._n_clusters, n_init=20)
+            self._kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
             self._y_pred = self._kmeans.fit_predict(self._encoder.predict(x))
             centroids = self._kmeans.cluster_centers_
-            assigned_centroids = np.zeros((x.shape[0], centroids.shape[1]))
-            for i in range(x.shape[0]):
+            assigned_centroids = np.zeros((x[0].shape[0], centroids.shape[1]))
+            for i in range(x[0].shape[0]):
                 assigned_centroids[i, :] = centroids[self._y_pred[i]]
             logger.info('Done.')
 
-            if y is not None and ite > 0: # FIX 
+            if y and ite: # FIX 
                 self.evaluate(self._y_pred, y, ite, (0, 0, 0))
 
             if ite > 0 and self.stopping_criterion(self._y_pred, self._y_pred_last):
                 break
 
             logger.info('Training model.')
-            train_history = self._model.fit(x, [assigned_centroids, x], batch_size=256, verbose=0)
-
-#             if ite % save_interval == 0:
-#                 logger.info('saving model to: {}'.format(os.path.join(save_dir, 'dcec_model_{}.h5'.format(ite))))
-#                 self._model.save_weights(os.path.join(save_dir, 'dcec_model_{}.h5'.format(ite)))
+            train_history = self._model.fit(x, [assigned_centroids.tolist(), x[0], x[1], x[2], x[3]], batch_size=256, verbose=0)
 
             self._y_pred_last = np.copy(self._y_pred)
-            ite += 1
 
         
 class DC_Kmeans(DeepClusteringBase):
@@ -455,6 +483,16 @@ class DC_Kmeans(DeepClusteringBase):
 
     def predict(self, x):
         return self._kmeans.predict(self._encoder.predict(x, verbose=0))
+    
+    def score(self, x):
+        def closeness(x, clusters):
+            result = [np.sqrt(sum([(x[i][j] - self._kmeans.cluster_centers_[clusters[i]][j])**2 
+                                   for j in range(len(x[i]))])) for i in range(len(x))]
+            return 1. - result / np.max(result)
+    
+        x_emb = self._encoder.predict(x, verbose=0)
+        clusters = self.predict(x_emb)
+        return closeness(x_emb, clusters)
 
     def compile(self, loss_weights=[1., 1.], optimizer='adam'):
         self._model.compile(loss=['mse', 'mse'], 
@@ -462,12 +500,12 @@ class DC_Kmeans(DeepClusteringBase):
                             optimizer=optimizer)
         
     def initialize(self, x):
-        self._kmeans = KMeans(n_clusters=self._n_clusters, n_init=20)
+        self._kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
         self.f = self._encoder.predict(x)
         self.y_pred = self._kmeans.fit_predict(self.f)
         self.centroids = self._kmeans.cluster_centers_
-        self.assigned_centroids = np.zeros((x.shape[0], self.centroids.shape[1]))
-        for i in range(x.shape[0]):
+        self.assigned_centroids = np.zeros((x[0].shape[0], self.centroids.shape[1]))
+        for i in range(x[0].shape[0]):
             self.assigned_centroids[i, :] = self.centroids[self.y_pred[i]]
         logger.info('Done.')
         
@@ -475,11 +513,11 @@ class DC_Kmeans(DeepClusteringBase):
         self.u = np.zeros(self.f.shape)
 
     def train_model(self, x, y, batch_size, _):
-        save_interval = int(x.shape[0] / batch_size * 5)
+        save_interval = int(x[0].shape[0] / batch_size * 5)
         logger.info('Save interval {}'.format(save_interval))
         
         for ite in range(int(self._max_epochs)):
-            for i in range(x.shape[0]):
+            for i in range(x[0].shape[0]):
                 self._y[i, :] = (self._lmd * self.assigned_centroids[i] + self._ro * (self.f[i] - self.u[i])) / (self._lmd + self._ro)
             
             self.u = self.u + self._y - self.f
@@ -487,10 +525,10 @@ class DC_Kmeans(DeepClusteringBase):
             for i in range(self._n_clusters):
                 self.centroids[i, :] = self.assigned_centroids[self.y_pred == i].mean(axis = 0)
                 
-            for i in range(x.shape[0]):
+            for i in range(x[0].shape[0]):
                 self.y_pred[i] = np.linalg.norm(np.ones(self.centroids.shape) * self._y[i] - self.centroids, axis=1).argmin()
             
-            for i in range(x.shape[0]):
+            for i in range(x[0].shape[0]):
                 self.assigned_centroids[i, :] = self.centroids[self.y_pred[i]]
             
             # evaluate the clustering performance
@@ -500,15 +538,15 @@ class DC_Kmeans(DeepClusteringBase):
             if ite > 0 and self.stopping_criterion(self.y_pred, y_pred_last):
                 break
 
-            logger.info('Training model.')
+            logger.info(f'Training model. Iteration {ite}.')
             train_history = self._model.fit(x, [self.assigned_centroids, x], batch_size=128, verbose=0)
             self.f = self._encoder.predict(x)
 
             # save intermediate model
             if ite % save_interval == 0:
-                # save DCEC model checkpoints
-                print('saving model to:', self._save_dir + '/dcec_model_' + str(ite) + '.h5')
-                self._model.save_weights(self._save_dir + '/dcec_model_' + str(ite) + '.h5')
+                # save model checkpoints
+                print('saving model to:', self._save_dir + '/model_' + str(ite) + '.h5')
+                self._model.save_weights(self._save_dir + '/model_' + str(ite) + '.h5')
 
             y_pred_last = np.copy(self.y_pred)
             ite += 1
