@@ -5,6 +5,7 @@ from tensorflow.python.keras import backend as K
 from tensorflow.python.keras.optimizers import Adam
 
 from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 from sklearn.utils.linear_assignment_ import linear_assignment
 from time import time
 from datetime import datetime
@@ -102,7 +103,7 @@ class DeepClusteringBase:
             self._autoencoder.load_weights(cae_weights)
             logger.info('cae_weights is loaded successfully.')
 
-        logger.info('Initializing cluster centers with k-means.')
+        logger.info('Initializing cluster centers.')
         t1 = time()
         init_variables = self.initialize(x)
         logger.info('Cluster centers initialized: {}'.format(time() - t1))
@@ -112,12 +113,7 @@ class DeepClusteringBase:
             os.makedirs(self._save_dir)
             
         STRFTIME = "%Y-%m-%d_%H:%M"
-        #self._logfile = CSVLogger(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'))
         self._logfile = open(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'), 'w')
-        #self._logwriter = csv.DictWriter(self._logfile, 
-        #                                 fieldnames=['iter', 'acc', 'nmi', 
-        #                                             'ari', 'L', 'Lc', 'Lr'])
-        #self._logwriter.writeheader()
         
         logger.info('Training model.')
         t2 = time()
@@ -195,25 +191,14 @@ class DeepClusteringBase:
                 y_pred_last = np.copy(self._y_pred)
 
             if (index + 1) * batch_size > n_samples:
-#                debug1 = DeepClusteringBase._slice_lists(x, index, batch_size, end=Tue)
-#                 print(type(debug1))
-#                 print(type(debug1[0]))
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size, end=True),# x[index * batch_size::],
+                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size, end=True),
                                                   y=DeepClusteringBase._slice_lists(self.signal_example(x, variables), 
                                                                       index, 
                                                                       batch_size, 
                                                                       end=True))
                 index = 0
             else:
-#                 debug1 = DeepClusteringBase._slice_lists(x, index, batch_size)
-#                 print(type(debug1))
-#                 print(type(debug1[0]))
-#                 print('==========')
-#                 debug5 = self.signal_example(x, variables)
-#                 print(type(debug5))
-#                 print(type(debug5[0]))
-#                 print(type(debug5[1]))
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size),#x[index * batch_size:(index + 1) * batch_size],
+                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size),
                                                   y=DeepClusteringBase._slice_lists(self.signal_example(x, variables), 
                                                                       index, 
                                                                       batch_size))
@@ -273,7 +258,6 @@ class ClusteringLayer(Layer):
         assert len(input_shape) == 2
         input_dim = input_shape[1]
         self.input_spec = InputSpec(dtype=K.floatx(), shape=(None, input_dim))
-        #print(type(input_dim), input_dim)
         self.clusters = self.add_weight(shape=(self.n_clusters, int(input_dim)), 
                                         initializer='glorot_uniform', name='clusters')
         if self.initial_weights is not None:
@@ -349,7 +333,7 @@ class DCEC(DeepClusteringBase):
         return self.score(x).argmax(axis=1)  # q.argmax
     
     def score_examples(self, x):
-        # the clustering layer weights might be considered as the cluster centroids
+        # the clustering layer weights might be considered as the cluster centroids/means/whatever was used for initialization
         cluster_centers_ = self._model.get_layer(name='clustering').get_weights()[0]
         
         def closeness(x, clusters):
@@ -376,7 +360,6 @@ class DCEC(DeepClusteringBase):
         kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
         self._y_pred = kmeans.fit_predict(self._encoder.predict(x))
         self._model.get_layer(name='clustering').set_weights([kmeans.cluster_centers_])
-        self._kmeans = kmeans
         return None
         
     def update_variables(self, x, variables):
@@ -387,6 +370,26 @@ class DCEC(DeepClusteringBase):
     def signal_example(self, x, p):
         # x - list of tensors
         return [p] + x
+    
+    
+class DCEC_GMM(DCEC):
+    def initialize(self, x):
+        gmm = GaussianMixture(n_components=self._n_clusters, n_init=5)
+        self._y_pred = gmm.fit_predict(self._encoder.predict(x))
+        self._model.get_layer(name='clustering').set_weights([gmm.means_])
+        return None
+    
+    def score_examples(self, x):
+        cluster_centers_ = self._model.get_layer(name='clustering').get_weights()[0]
+        
+        def closeness(x, clusters):
+            result = [np.sqrt(sum([(x[i][j] - cluster_centers_[clusters[i]][j])**2 
+                                   for j in range(len(x[i]))])) for i in range(len(x))]
+            return result / np.max(result)
+        
+        x_emb = self.score(x)
+        clusters = x_emb.argmax(axis=1)
+        return closeness(x_emb, clusters)
     
     
 class DAEC(DeepClusteringBase):
@@ -449,7 +452,7 @@ class DAEC(DeepClusteringBase):
                 assigned_centroids[i, :] = centroids[self._y_pred[i]]
             logger.info('Done.')
 
-            if y and ite: # FIX 
+            if y and ite:
                 self.evaluate(self._y_pred, y, ite, (0, 0, 0))
 
             if ite > 0 and self.stopping_criterion(self._y_pred, self._y_pred_last):
@@ -556,4 +559,3 @@ class DC_Kmeans(DeepClusteringBase):
         print('saving model to:', self._save_dir + '/dcec_model_final.h5')
         self._model.save_weights(self._save_dir + '/dcec_model_final.h5')
         t3 = time()
-        
