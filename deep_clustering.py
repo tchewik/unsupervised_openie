@@ -113,7 +113,12 @@ class DeepClusteringBase:
             os.makedirs(self._save_dir)
             
         STRFTIME = "%Y-%m-%d_%H:%M"
+        #self._logfile = CSVLogger(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'))
         self._logfile = open(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'), 'w')
+        #self._logwriter = csv.DictWriter(self._logfile, 
+        #                                 fieldnames=['iter', 'acc', 'nmi', 
+        #                                             'ari', 'L', 'Lc', 'Lr'])
+        #self._logwriter.writeheader()
         
         logger.info('Training model.')
         t2 = time()
@@ -191,14 +196,25 @@ class DeepClusteringBase:
                 y_pred_last = np.copy(self._y_pred)
 
             if (index + 1) * batch_size > n_samples:
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size, end=True),
+#                debug1 = DeepClusteringBase._slice_lists(x, index, batch_size, end=Tue)
+#                 print(type(debug1))
+#                 print(type(debug1[0]))
+                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size, end=True),# x[index * batch_size::],
                                                   y=DeepClusteringBase._slice_lists(self.signal_example(x, variables), 
                                                                       index, 
                                                                       batch_size, 
                                                                       end=True))
                 index = 0
             else:
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size),
+#                 debug1 = DeepClusteringBase._slice_lists(x, index, batch_size)
+#                 print(type(debug1))
+#                 print(type(debug1[0]))
+#                 print('==========')
+#                 debug5 = self.signal_example(x, variables)
+#                 print(type(debug5))
+#                 print(type(debug5[0]))
+#                 print(type(debug5[1]))
+                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size),#x[index * batch_size:(index + 1) * batch_size],
                                                   y=DeepClusteringBase._slice_lists(self.signal_example(x, variables), 
                                                                       index, 
                                                                       batch_size))
@@ -258,6 +274,7 @@ class ClusteringLayer(Layer):
         assert len(input_shape) == 2
         input_dim = input_shape[1]
         self.input_spec = InputSpec(dtype=K.floatx(), shape=(None, input_dim))
+        #print(type(input_dim), input_dim)
         self.clusters = self.add_weight(shape=(self.n_clusters, int(input_dim)), 
                                         initializer='glorot_uniform', name='clusters')
         if self.initial_weights is not None:
@@ -459,7 +476,8 @@ class DAEC(DeepClusteringBase):
                 break
 
             logger.info('Training model.')
-            train_history = self._model.fit(x, [assigned_centroids.tolist(), x[0], x[1], x[2], x[3]], batch_size=256, verbose=0)
+            train_history = self._model.fit(x, [assigned_centroids.tolist(), x[0], x[1], x[2], #x[3]
+                                               ], batch_size=256, verbose=0)
 
             self._y_pred_last = np.copy(self._y_pred)
 
@@ -559,3 +577,4 @@ class DC_Kmeans(DeepClusteringBase):
         print('saving model to:', self._save_dir + '/dcec_model_final.h5')
         self._model.save_weights(self._save_dir + '/dcec_model_final.h5')
         t3 = time()
+        
