@@ -33,6 +33,7 @@ def _acc(y_true, y_pred):
         accuracy, in [0,1]
     """
     y_true = y_true.astype(np.int64)
+    
     assert y_pred.size == y_true.size
     D = max(y_pred.max(), y_true.max()) + 1
     w = np.zeros((D, D), dtype=np.int64)
@@ -78,9 +79,14 @@ class DeepClusteringBase:
 
         # begin training
         t0 = time()
-        self._autoencoder.fit(x, x, batch_size=batch_size, epochs=epochs, 
-                              callbacks=[csv_logger, callback_tensorboard], 
-                              verbose=False, validation_split=0.1)
+        try:
+            self._autoencoder.fit(x, x, batch_size=batch_size, epochs=epochs, 
+                                  callbacks=[csv_logger, callback_tensorboard], 
+                                  verbose=False, validation_split=0.1)
+        except ValueError:
+            self._autoencoder.fit(x, x[-1], batch_size=batch_size, epochs=epochs, 
+                                  callbacks=[csv_logger, callback_tensorboard], 
+                                  verbose=False, validation_split=0.1)
         logger.info('Pretraining time: {}'.format(str(time() - t0)))
         self._autoencoder.save(os.path.join(self._save_dir, 'pretrain_cae_model.h5'))
         
@@ -113,13 +119,7 @@ class DeepClusteringBase:
             os.makedirs(self._save_dir)
             
         STRFTIME = "%Y-%m-%d_%H:%M"
-        #self._logfile = CSVLogger(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'))
-        self._logfile = open(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'), 'w')
-        #self._logwriter = csv.DictWriter(self._logfile, 
-        #                                 fieldnames=['iter', 'acc', 'nmi', 
-        #                                             'ari', 'L', 'Lc', 'Lr'])
-        #self._logwriter.writeheader()
-        
+        self._logfile = open(os.path.join(self._save_dir, f'train_log_{datetime.now().strftime(STRFTIME)}.csv'), 'w')        
         logger.info('Training model.')
         t2 = time()
         self.train_model(x, y, batch_size, init_variables)
@@ -181,6 +181,8 @@ class DeepClusteringBase:
         for ite in range(self._maxiter):
             
             if ite % self._update_interval == 0:
+                logger.info(f'Training model. Iteration #{ite}.')
+                
                 self._y_pred, variables = self.update_variables(x, variables)
                 
                 if ite > 0:
@@ -192,32 +194,22 @@ class DeepClusteringBase:
 
                 if ite > 0 and self.stopping_criterion(self._y_pred, y_pred_last):
                     break
+                    
+                
                 
                 y_pred_last = np.copy(self._y_pred)
 
             if (index + 1) * batch_size > n_samples:
-#                debug1 = DeepClusteringBase._slice_lists(x, index, batch_size, end=Tue)
-#                 print(type(debug1))
-#                 print(type(debug1[0]))
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size, end=True),# x[index * batch_size::],
+                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size, end=True),
                                                   y=DeepClusteringBase._slice_lists(self.signal_example(x, variables), 
                                                                       index, 
                                                                       batch_size, 
                                                                       end=True))
                 index = 0
             else:
-#                 debug1 = DeepClusteringBase._slice_lists(x, index, batch_size)
-#                 print(type(debug1))
-#                 print(type(debug1[0]))
-#                 print('==========')
-#                 debug5 = self.signal_example(x, variables)
-#                 print(type(debug5))
-#                 print(type(debug5[0]))
-#                 print(type(debug5[1]))
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size),#x[index * batch_size:(index + 1) * batch_size],
+                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size),
                                                   y=DeepClusteringBase._slice_lists(self.signal_example(x, variables), 
-                                                                      index, 
-                                                                      batch_size))
+                                                                                    index, batch_size))
                 index += 1
 
             if ite % save_interval == 0:
@@ -305,8 +297,7 @@ class ClusteringLayer(Layer):
         return dict(list(base_config.items()) + list(config.items()))
         
 
-class DCEC(DeepClusteringBase):
-    # DCEC is not the proper name. It is actually IDEC
+class IDEC(DeepClusteringBase):
     def __init__(self,
                  input_shape,
                  autoencoder_ctor,
@@ -369,7 +360,7 @@ class DCEC(DeepClusteringBase):
 
     def compile(self, loss_weights=[1., 1.], optimizer='adam', loss=['mse'], *args, **kwargs):
         optimizer = Adam(lr=0.01)
-        self._model.compile(loss=['kld'] + loss * (len(self._model.outputs) - 1), # for multiinput models
+        self._model.compile(loss=['kld'] + loss * (len(self._model.outputs) - 1),  # capture multioutput models
                             loss_weights=[loss_weights for _ in range(len(self._model.outputs))], 
                             optimizer=optimizer)
         
@@ -389,7 +380,7 @@ class DCEC(DeepClusteringBase):
         return [p] + x
     
     
-class DCEC_GMM(DCEC):
+class IDEC_GMM(IDEC):
     def initialize(self, x):
         gmm = GaussianMixture(n_components=self._n_clusters, n_init=5)
         self._y_pred = gmm.fit_predict(self._encoder.predict(x))
@@ -475,7 +466,7 @@ class DAEC(DeepClusteringBase):
             if ite > 0 and self.stopping_criterion(self._y_pred, self._y_pred_last):
                 break
 
-            logger.info('Training model.')
+            logger.info(f'Training model. Iteration #{ite}.')
             train_history = self._model.fit(x, [assigned_centroids.tolist(), x[0], x[1], x[2], #x[3]
                                                ], batch_size=256, verbose=0)
 
@@ -498,28 +489,29 @@ class DC_Kmeans(DeepClusteringBase):
         self._ro = 1.
         
     def create_model(self):
-        return Model(inputs=self._autoencoder.input, 
-                     outputs=[self._hidden_layer(), 
-                              self._autoencoder.output])
-
-    def predict(self, x):
-        return self._kmeans.predict(self._encoder.predict(x, verbose=0))
-    
-    def score(self, x):
-        def closeness(x, clusters):
-            result = [np.sqrt(sum([(x[i][j] - self._kmeans.cluster_centers_[clusters[i]][j])**2 
-                                   for j in range(len(x[i]))])) for i in range(len(x))]
-            return 1. - result / np.max(result)
-    
-        x_emb = self._encoder.predict(x, verbose=0)
-        clusters = self.predict(x_emb)
-        return closeness(x_emb, clusters)
-
-    def compile(self, loss_weights=[1., 1.], optimizer='adam'):
-        self._model.compile(loss=['mse', 'mse'], 
-                            loss_weights=loss_weights, 
-                            optimizer=optimizer)
         
+        if type(self._autoencoder.output) is list:
+            return Model(inputs=self._autoencoder.input,
+                         outputs=[self._hidden_layer()] + self._autoencoder.output)
+        else:
+            return Model(inputs=self._autoencoder.input,
+                         outputs=[self._hidden_layer(), 
+                                  self._autoencoder.output])
+    
+    def get_scores(self):
+        
+        def closeness():
+            result = [np.sqrt(sum([(self._y[i][j] - self.assigned_centroids[i][j])**2
+                                   for j in range(len(self._y[i]))])) for i in range(len(self._y))]
+            return 1. - result / np.max(result)
+        
+        return closeness()
+
+    def compile(self, loss_weights=[1., 1.], optimizer='adam', loss=['mse'], *args, **kwargs):
+        self._model.compile(loss=['mse'] + loss * (len(self._model.outputs) - 1),  # capture multioutput models 
+                            loss_weights=[loss_weights for _ in range(len(self._model.outputs))], 
+                            optimizer=optimizer)
+
     def initialize(self, x):
         self._kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
         self.f = self._encoder.predict(x)
@@ -559,8 +551,8 @@ class DC_Kmeans(DeepClusteringBase):
             if ite > 0 and self.stopping_criterion(self.y_pred, y_pred_last):
                 break
 
-            logger.info(f'Training model. Iteration {ite}.')
-            train_history = self._model.fit(x, [self.assigned_centroids, x], batch_size=128, verbose=0)
+            logger.info(f'Training model. Iteration #{ite}.')
+            train_history = self._model.fit(x, [self.assigned_centroids.tolist(), x[0], x[1], x[2]], batch_size=128, verbose=0)
             self.f = self._encoder.predict(x)
 
             # save intermediate model
