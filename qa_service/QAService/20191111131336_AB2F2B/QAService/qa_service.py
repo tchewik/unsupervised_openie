@@ -80,9 +80,9 @@ class QAService(BentoService):
     def predict(self, input_dict):
         
         credentials = {
-            'host': 'bolt://openie.gpu.computer:7687',
-            'username': 'neo4j',
-            'password': 'openinfoextract'
+            'host': '##',
+            'username': '##',
+            'password': '##'
         }
         
         ner = SequenceTagger.load('ner')
