@@ -1,0 +1,6 @@
+bentoml==0.4.8
+flair
+torch
+pandas
+py2neo
+numpy

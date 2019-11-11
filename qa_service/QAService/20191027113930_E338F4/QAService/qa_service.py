@@ -64,7 +64,7 @@ class QAService(BentoService):
         true_relation_types = []
         ##--stage 2: detect relations--##
         for candidate_relation_type, candidate_relations_set in relations.items():
-            if any(relation.lower() in question.lower() for relation in candidate_relations_set):
+            if any(relation in question for relation in candidate_relations_set):
                 true_relation_types.append(candidate_relation_type)
 
         ##--stage 3: executing queries--##

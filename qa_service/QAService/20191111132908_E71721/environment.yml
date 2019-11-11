@@ -1,0 +1,8 @@
+name: bentoml-custom-conda-env
+channels:
+- defaults
+dependencies:
+- python=3.6.8
+- pip
+- pip:
+  - bentoml[api_server]==0.4.8
