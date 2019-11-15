@@ -12,7 +12,7 @@ SAME_CLUSTERS = [[
         ('michael levitt', 'was born in', 'south africa'),
     ], [
         ("carol bartz", "chairman of", "autodesk"),  # 8
-        ("reddit", "'s ceo'", "steve huffman"),  # 13
+        ("reddit", "'s ceo", "steve huffman"),  # 13
         ("brian farrell", "ceo of", "thq"),  # 13
         ("guo ping", "is chairman of", "huawei device"),  # 49
         ("hiroaki nakanishi", "chairman", "hitachi"),  # 49
@@ -39,7 +39,7 @@ SAME_CLUSTERS = [[
     ], [
         ('joseph f. ossanna', 'worked', 'bell telephone laboratories'),  # 6
         ('seymour cray', 'worked at', 'cdc'),  # 49
-        ('david mcfarland', 'has worked at', 'digitek'),  # 13
+        ('david mcfarland', 'had worked at', 'digitek'),  # 13
         ('david blythe', 'worked at', 'microsoft'),  # 13
         ('doug ahl', 'had worked at', 'digitek'),  # 13
     ], [
