@@ -22,6 +22,8 @@ logger = logging.getLogger()
 
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 
+from tqdm import tqdm_notebook as tqdm
+
 _nmi = normalized_mutual_info_score
 _ari = adjusted_rand_score
 
@@ -105,7 +107,7 @@ class DeepClusteringBase:
     def extract_feature(self, x):  # extract features from before clustering layer
         return self._encoder.predict(x)
 
-    def fit(self, x, y=None, labels=None, batch_size=1024, cae_weights=None):
+    def fit(self, x, y=None, labels=None, batch_size=256, cae_weights=None):
         t0 = time()
         if not self._pretrained and cae_weights is None:
             self.pretrain(x, batch_size, epochs=self._pretrain_epochs)
@@ -164,11 +166,15 @@ class DeepClusteringBase:
     @staticmethod
     def _slice_lists(lsts, index, batch_size, end=False):
         if end:
-            if type(lsts[0]) is np.float64:
+            if type(lsts[0]) in (np.float64, np.int64):
                 return lsts[index * batch_size:]
+            if len(lsts) > 3:
+                p = lsts[0][index * batch_size::]
+                return [p] + [l[index * batch_size::] for l in lsts[1:]]
+
             return [l[index * batch_size::] for l in lsts]
         else:
-            if type(lsts[0]) is np.float64:
+            if type(lsts[0]) in (np.float64, np.int64):
                 return lsts[index * batch_size:(index + 1) * batch_size]
             return [l[index * batch_size:(index + 1) * batch_size] for l in lsts]
 
@@ -179,8 +185,24 @@ class DeepClusteringBase:
         else:
             return [data]
 
+    @staticmethod
+    def _insert_labeled_data(a, b, batch_size):
+        result = [[] for _ in range(len(a))]
+        start = 0
+        for l in range(len(a)):
+            for i in range(len(a[l]) // batch_size):
+                result[l] += a[l][start:start + batch_size].tolist()
+                start += batch_size
+                result[l] += b[l].tolist()
+            result[l] = np.array(result[l])
+            start = 0
+
+        return result
+
     def train_model(self, x, y, batch_size, variables):
         x = DeepClusteringBase._standartize_data(x)
+        x = DeepClusteringBase._insert_labeled_data(x, self._x_labeled, batch_size)
+        batch_size += len(self._x_labeled[0])
         n_samples = x[0].shape[0]
 
         logger.info('Update interval {}'.format(self._update_interval))
@@ -190,10 +212,10 @@ class DeepClusteringBase:
         loss = [0, 0, 0]
         index = 0
         y_pred_last = None
-        for ite in range(self._maxiter):
+        for ite in tqdm(range(self._maxiter)):
 
-            logger.info(f'Training model. Iteration #{ite}.')
             if ite % self._update_interval == 0:
+                logger.info(f'Training model. Iteration #{ite}.')
 
                 self._y_pred, variables = self.update_variables(x, variables)
 
@@ -209,25 +231,30 @@ class DeepClusteringBase:
 
                 y_pred_last = np.copy(self._y_pred)
 
-            if (index + 1) * batch_size > n_samples:
-                self._current_labels = DeepClusteringBase._slice_lists(self._labels, index, batch_size, end=True)
-                self.compile(gamma=self._gamma)
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size, end=True),
-                                                  y=DeepClusteringBase._slice_lists(self.signal_example(x, variables),
-                                                                                    index,
-                                                                                    batch_size,
-                                                                                    end=True))
+            if (index + 2) * batch_size > n_samples:
+
+                x_train = DeepClusteringBase._slice_lists(x, index, batch_size, end=True)
+                y_train = DeepClusteringBase._slice_lists(self.signal_example(x, variables), index, batch_size,
+                                                          end=True)  # + self._y_labeled
+
+                loss = self._model.train_on_batch(x=x_train,
+                                                  y=y_train)
                 index = 0
             else:
-                self._current_labels = DeepClusteringBase._slice_lists(self._labels, index, batch_size)
-                self.compile(gamma=self._gamma)
-                loss = self._model.train_on_batch(x=DeepClusteringBase._slice_lists(x, index, batch_size),
-                                                  y=DeepClusteringBase._slice_lists(self.signal_example(x, variables),
-                                                                                    index, batch_size))
+
+                x_train = DeepClusteringBase._slice_lists(x, index, batch_size)
+                y_train = DeepClusteringBase._slice_lists(self.signal_example(x, variables), index,
+                                                          batch_size)  # + self._y_labeled
+
+                # self.compile(gamma=self._gamma)
+                loss = self._model.train_on_batch(x=x_train,
+                                                  y=y_train)
+                logger.info(f'loss: {loss}')
                 index += 1
 
             if ite % save_interval == 0:
-                logger.info('saving model to: {}'.format(os.path.join(self._save_dir, 'dcec_model_{}.h5'.format(str(ite)))))
+                logger.info(
+                    'saving model to: {}'.format(os.path.join(self._save_dir, 'dcec_model_{}.h5'.format(str(ite)))))
                 self._model.save_weights(os.path.join(self._save_dir, 'dcec_model_{}.h5'.format(str(ite))))
 
             ite += 1
@@ -376,71 +403,66 @@ class IDEC(DeepClusteringBase):
 
     def ss_loss(self):
         def extended_kullback_leibler(y_true, y_pred):
-            len_actual_labels = int(max(self._current_labels))
+            # ld_x, ld_y = self._labeled_data
+
+            len_actual_labels = int(max(self._y_labeled))
             actual_labels = [[] for _ in range(len_actual_labels)]  # [[] * max(self._current_labels)]
-            
-            logger.info(f'len(actual_labels) = {len_actual_labels}')
+
             if len_actual_labels == 0:
                 return kld(y_true, y_pred)
-            
-            for i, actual_label in enumerate(self._current_labels):
+
+            for i, actual_label in enumerate(self._y_labeled):
                 if actual_label:
-                    logger.info(f'actual_label={actual_label}')
                     actual_labels[int(actual_label) - 1].append(i)
 
-            #y_class = K.argmax(y_true, axis=1)
-            
+            pred_labels = K.argmax(y_pred[-len(self._y_labeled):], axis=1)
             predicted_labels = []
             for i in range(self._n_clusters):
-                indices = tf.where(tf.equal(y_class, i))
+                indices = tf.where(tf.equal(pred_labels, i))
                 predicted_labels.append(indices)
-                
+
             def predicted_distance(i, j):
                 # binary metric
                 # 1, if examples are in the same cluster
                 i_tens, j_tens = tf.dtypes.cast(i, tf.float32), tf.dtypes.cast(j, tf.float32)
-                
+
                 for cluster in predicted_labels:
-                    y = tf.split(cluster, cluster.shape[1], axis=1)
-                    
+                    # y = tf.split(cluster, cluster.shape[1], axis=1)
+
                     for tens_i in range(cluster.shape[1]):
-                        for tens_j in range(tens_i + 1, cluster.shape[1]):
+                        for tens_j in range(cluster.shape[1]):
                             if tens_i != tens_j:
                                 if cluster[tens_i] == i_tens and cluster[tens_j] == j_tens:
-                                    return 0.
-                
-                return 1.
-            
+                                    return tf.dtypes.cast(0., tf.float32)
+
+                return tf.dtypes.cast(1., tf.float32)
+
             loss = 0.
-            for labeled_cluster in actual_labels[1:]:
+            for labeled_cluster in actual_labels:
                 # for each gold cluster find if it's objects are in the same predicted cluster
                 for i in range(len(labeled_cluster)):
                     for j in range(len(labeled_cluster) + 1):
                         loss += predicted_distance(i, j)
-                        
-            ss_loss = 1. - 0.5 * loss / ((self._batch_size - 1) * self._batch_size)  # 1. - sum * nCr(batch_size, 2)
+
+            # ss_loss = 1. - 1e1 * loss / (self._batch_size - 1)  # 1. - 1e1 *  batch_size * sum / nCr(batch_size, 2)
+            # ss_loss = loss / sum([len(labeled_cluster) * len(labeled_cluster) for labeled_cluster in actual_labels[1:]])
+            ss_loss = loss / (len(predicted_labels) - 1.)
             logger.info(f'ss_loss={ss_loss}')
-            result = kld(y_true, y_pred) + K.variable(ss_loss)
+            result = kld(y_true, y_pred) * ss_loss
 
             return result
 
         return extended_kullback_leibler
 
-    def compile(self, gamma=0.1, loss=['mse'], *args, **kwargs):
-        optimizer = Adam(lr=0.01)
-        
-        if not self._gamma:
-            self._gamma = gamma
-            self._model.compile(loss=['kld'] + loss * (len(self._model.outputs) - 1),
-                                # capture multioutput models
-                                loss_weights=[gamma] + [1. for _ in range(len(self._model.outputs) - 1)],
-                                optimizer=optimizer)
-        else:
-            #self.sess = K.get_session()
-            self._model.compile(loss=[self.ss_loss()] + loss * (len(self._model.outputs) - 1),  # capture multioutput models
-                                loss_weights=[self._gamma] + [1. for _ in range(len(self._model.outputs) - 1)],
-                                optimizer=optimizer)
+    def compile(self, labeled_data=None, gamma=0.1, loss=['mse'], *args, **kwargs):
 
+        self._x_labeled, self._y_labeled = labeled_data
+        self._gamma = gamma
+        self._optimizer = Adam(lr=0.05)
+        self._model.compile(loss=[self.ss_loss()] + loss * (len(self._model.outputs) - 1),
+                            # capture multioutput models
+                            loss_weights=[gamma] + [1. - gamma for _ in range(len(self._model.outputs) - 1)],
+                            optimizer=self._optimizer)
 
     def initialize(self, x):
         kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
