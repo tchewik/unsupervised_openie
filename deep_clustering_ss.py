@@ -13,7 +13,7 @@ from tensorflow.python.keras.layers import Layer, InputSpec
 from tensorflow.python.keras.models import Model
 from tensorflow.python.keras.optimizers import Adam
 
-from tensorflow.python.keras.losses import kld
+from tensorflow.python.keras.losses import kld, mse
 from tensorflow.python.keras import backend as K
 
 import tensorflow as tf
@@ -249,7 +249,7 @@ class DeepClusteringBase:
                 # self.compile(gamma=self._gamma)
                 loss = self._model.train_on_batch(x=x_train,
                                                   y=y_train)
-                logger.info(f'loss: {loss}')
+                #logger.info(f'loss: {loss}')
                 index += 1
 
             if ite % save_interval == 0:
@@ -345,7 +345,7 @@ class IDEC(DeepClusteringBase):
                  n_clusters,
                  pretrain_epochs,
                  log_dir,
-                 tol=0.05,
+                 tol=0.0001,
                  alpha=1.0,
                  maxiter=1e4,
                  update_interval=140,
@@ -406,59 +406,64 @@ class IDEC(DeepClusteringBase):
             # ld_x, ld_y = self._labeled_data
 
             len_actual_labels = int(max(self._y_labeled))
-            actual_labels = [[] for _ in range(len_actual_labels)]  # [[] * max(self._current_labels)]
+            y_labeled = np.zeros((self._y_labeled.size, self._n_clusters))
+            y_labeled[np.arange(self._y_labeled.size),self._y_labeled] = 1
+            
+            def loss(pred):
+                actual_labels = [[] for _ in range(len_actual_labels)]
 
-            if len_actual_labels == 0:
-                return kld(y_true, y_pred)
+                for i, actual_label in enumerate(self._y_labeled):
+                    if actual_label:
+                        actual_labels[int(actual_label) - 1].append(i)
 
-            for i, actual_label in enumerate(self._y_labeled):
-                if actual_label:
-                    actual_labels[int(actual_label) - 1].append(i)
+                pred_labels = K.argmax(pred, axis=1)
+                predicted_labels = []
+                for i in range(self._n_clusters):
+                    indices = tf.where(tf.equal(pred_labels, i))
+                    predicted_labels.append(indices)
 
-            pred_labels = K.argmax(y_pred[-len(self._y_labeled):], axis=1)
-            predicted_labels = []
-            for i in range(self._n_clusters):
-                indices = tf.where(tf.equal(pred_labels, i))
-                predicted_labels.append(indices)
+                def predicted_distance(i, j):
+                    # binary metric
+                    # 1, if examples are in the same cluster
+                    i_tens, j_tens = tf.dtypes.cast(i, tf.float32), tf.dtypes.cast(j, tf.float32)
 
-            def predicted_distance(i, j):
-                # binary metric
-                # 1, if examples are in the same cluster
-                i_tens, j_tens = tf.dtypes.cast(i, tf.float32), tf.dtypes.cast(j, tf.float32)
+                    for cluster in predicted_labels:
+                        # y = tf.split(cluster, cluster.shape[1], axis=1)
 
-                for cluster in predicted_labels:
-                    # y = tf.split(cluster, cluster.shape[1], axis=1)
+                        for tens_i in range(cluster.shape[1]):
+                            for tens_j in range(cluster.shape[1]):
+                                if tens_i != tens_j:
+                                    if cluster[tens_i] == i_tens and cluster[tens_j] == j_tens:
+                                        return tf.dtypes.cast(0., tf.float32)
 
-                    for tens_i in range(cluster.shape[1]):
-                        for tens_j in range(cluster.shape[1]):
-                            if tens_i != tens_j:
-                                if cluster[tens_i] == i_tens and cluster[tens_j] == j_tens:
-                                    return tf.dtypes.cast(0., tf.float32)
+                    return tf.dtypes.cast(1., tf.float32)
 
-                return tf.dtypes.cast(1., tf.float32)
+                loss = 0.
+                for labeled_cluster in actual_labels:
+                    # for each gold cluster find if it's objects are in the same predicted cluster
+                    for i in range(len(labeled_cluster)):
+                        for j in range(len(labeled_cluster) + 1):
+                            loss += predicted_distance(i, j)
 
-            loss = 0.
-            for labeled_cluster in actual_labels:
-                # for each gold cluster find if it's objects are in the same predicted cluster
-                for i in range(len(labeled_cluster)):
-                    for j in range(len(labeled_cluster) + 1):
-                        loss += predicted_distance(i, j)
-
-            # ss_loss = 1. - 1e1 * loss / (self._batch_size - 1)  # 1. - 1e1 *  batch_size * sum / nCr(batch_size, 2)
-            # ss_loss = loss / sum([len(labeled_cluster) * len(labeled_cluster) for labeled_cluster in actual_labels[1:]])
-            ss_loss = loss / (len(predicted_labels) - 1.)
-            logger.info(f'ss_loss={ss_loss}')
-            result = kld(y_true, y_pred) * ss_loss
+                # ss_loss = 1. - 1e1 * loss / (self._batch_size - 1)  # 1. - 1e1 *  batch_size * sum / nCr(batch_size, 2)
+                # ss_loss = loss / sum([len(labeled_cluster) * len(labeled_cluster) for labeled_cluster in actual_labels[1:]])
+                ss_loss = loss / tf.dtypes.cast(len(predicted_labels), tf.float32)
+                return ss_loss
+            
+            #result = loss(y_pred[-len_actual_labels:]) + kld(y_true[:-len_actual_labels], y_pred[:-len_actual_labels])
+            result = 0.7 * mse(y_pred[-len(y_labeled):], 
+                         tf.convert_to_tensor(y_labeled, dtype=tf.float32)) +\
+                     0.3 * kld(y_true[:-len(self._y_labeled)], 
+                         y_pred[:-len(self._y_labeled)])
 
             return result
 
         return extended_kullback_leibler
 
     def compile(self, labeled_data=None, gamma=0.1, loss=['mse'], *args, **kwargs):
-
         self._x_labeled, self._y_labeled = labeled_data
         self._gamma = gamma
-        self._optimizer = Adam(lr=0.05)
+        self._optimizer = Adam(0.0001)
         self._model.compile(loss=[self.ss_loss()] + loss * (len(self._model.outputs) - 1),
                             # capture multioutput models
                             loss_weights=[gamma] + [1. - gamma for _ in range(len(self._model.outputs) - 1)],
@@ -466,7 +471,19 @@ class IDEC(DeepClusteringBase):
 
     def initialize(self, x):
         kmeans = KMeans(n_clusters=self._n_clusters, n_init=20, n_jobs=MAX_JOBS)
-        self._y_pred = kmeans.fit_predict(self._encoder.predict(x))
+        kmeans.fit(self._encoder.predict(x))
+        centroids = kmeans.cluster_centers_
+        
+        labeled_centroids = self._encoder.predict([
+            [self._x_labeled[0][self._y_labeled == i][0] for i in range(1, max(self._y_labeled) + 1)],
+            [self._x_labeled[1][self._y_labeled == i][0] for i in range(1, max(self._y_labeled) + 1)],
+            [self._x_labeled[2][self._y_labeled == i][0] for i in range(1, max(self._y_labeled) + 1)]])
+        
+        #labeled_centroids = np.array([self._encoder.predict(self._x_labeled[self._y_labeled.astype(int) == i])[0] for i in range(1, max(self._y_labeled) + 1)])
+        kmeans.cluster_centers_[1:len(labeled_centroids)+1, :] = labeled_centroids
+        #logger.info(f'cluster centers: {kmeans.cluster_centers_}')
+        
+        self._y_pred = kmeans.predict(self._encoder.predict(x))
         self._model.get_layer(name='clustering').set_weights([kmeans.cluster_centers_])
         return None
 
