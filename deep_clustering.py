@@ -1,12 +1,14 @@
-from tensorflow.python.keras.layers import Layer, InputSpec
-from tensorflow.python.keras.models import Model
-from tensorflow.python.keras.callbacks import CSVLogger, TensorBoard
-from tensorflow.python.keras import backend as K
-from tensorflow.python.keras.optimizers import Adam
+from tensorflow.keras.layers import Layer, InputSpec
+from tensorflow.keras.models import Model
+from tensorflow.keras.callbacks import CSVLogger, TensorBoard
+from tensorflow.keras import backend as K
+#from tensorflow.python.keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam
 
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
-from sklearn.utils.linear_assignment_ import linear_assignment
+#from sklearn.utils.linear_assignment_ import linear_assignment
+from scipy.optimize import linear_sum_assignment as linear_assignment 
 from time import time
 from datetime import datetime
 import numpy as np
@@ -72,9 +74,9 @@ class DeepClusteringBase:
         
         callback_tensorboard = TensorBoard(log_dir=os.path.join(self._log_dir, str(datetime.now())), 
                                            histogram_freq=2, 
-                                           batch_size=32, 
+                                           #batch_size=32, 
                                            write_graph=True, 
-                                           write_grads=True, 
+                                           #write_grads=True, 
                                            write_images=False)
 
         # begin training
