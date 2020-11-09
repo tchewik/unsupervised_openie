@@ -135,7 +135,6 @@ class DeepClusteringBase:
         self.train_model(x, y, batch_size, init_variables)
         logger.info('Done. {}'.format(time() - t2))
 
-        self._logfile.close()
         logger.info('Saving model to: {}'.format(os.path.join(self._save_dir, 'dcec_model_final.h5')))
         self._model.save_weights(os.path.join(self._save_dir, 'dcec_model_final.h5'))
         t3 = time()
@@ -194,7 +193,6 @@ class DeepClusteringBase:
                 self._y_pred, variables = self.update_variables(x, variables)
 
                 if ite > 0:
-                    self._logfile.write(str(loss))
                     logger.info('Loss: {}'.format(str(loss)))
 
                 if y is not None:
@@ -599,6 +597,5 @@ class DC_Kmeans(DeepClusteringBase):
             ite += 1
 
         # save the trained model
-        self._logfile.close()
         print('saving model to:', self._save_dir + '/dcec_model_final.h5')
         self._model.save_weights(self._save_dir + '/dcec_model_final.h5')
