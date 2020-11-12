@@ -9,6 +9,7 @@ from tensorflow.python.keras.layers import Input
 
 from tensorflow.python.keras.layers import concatenate
 from tensorflow.python.keras.layers import GaussianNoise
+from tensorflow.python.keras.layers import BatchNormalization
 from tensorflow.python.keras.layers import UpSampling1D
 
 
@@ -35,14 +36,19 @@ def mish(inputs):
     return inputs * math.tanh(math.softplus(inputs))
 
 
-def noised_ae(input_shape):
-    CONV_SIZES = 8, 32, 128  # filters for obj/subj (0, 1) & large filter for large predicate (2)
+def noised_ae(input_shape, noise=False, normalization=False):
+    CONV_SIZES = 16, 32, 128  # filters for obj/subj (0, 1) & large filter for large predicate (2)
     INNER_SIZE = CONV_SIZES[0] * 2 + CONV_SIZES[1]
 
     def encode_embedding_input(input_layer, large=False):
         conv1_size, conv2_size = (CONV_SIZES[2], CONV_SIZES[1]) if large else (CONV_SIZES[1], CONV_SIZES[0])
 
-        input_layer = GaussianNoise(stddev=.001)(input_layer)
+        if noise:
+            input_layer = GaussianNoise(stddev=.001)(input_layer)
+        
+        if normalization:
+            input_layer = BatchNormalization()(input_layer)
+        
         conv1 = Conv1D(conv1_size, (2,), activation='mish', padding='same')(input_layer)
         pool1 = MaxPooling1D((2,), padding='same')(conv1)
         conv2 = Conv1D(conv2_size, (2,), activation='mish', padding='same')(pool1)
@@ -79,12 +85,11 @@ def noised_ae(input_shape):
     return model
 
 
-def masked_ae(input_shape):
+def masked_ae(input_shape, large=False):
     """ mask relation embedding and try to restore it along with the arguments """
 
-    CONV_SIZES = 8, 16, 128  # filters for obj/subj (0, 1) & large filter for large predicate (2)
+    CONV_SIZES = 16, 32, 128  # filters for obj/subj (0, 1) & large filter for large predicate (2)
     INNER_SIZE = CONV_SIZES[0] * 2 + CONV_SIZES[1]
-    # INNER_SIZE = 100
 
     def encode_embedding_input(input_layer):
         conv1_size, conv2_size = (CONV_SIZES[2], CONV_SIZES[1])
