@@ -71,6 +71,6 @@ transformers==4.9.2
 typing-extensions==3.7.4.3
 Unidecode==1.2.0
 urllib3==1.26.6
-Werkzeug==2.0.1
+Werkzeug==2.2.3
 wrapt==1.12.1
 zipp==3.5.0
